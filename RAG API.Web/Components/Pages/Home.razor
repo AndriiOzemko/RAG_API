@@ -1,0 +1,240 @@
+﻿@page "/"
+@using RAG_API.Web
+@inject RagApiClient Api
+@implements IDisposable
+
+<PageTitle>Q&amp;A Bot</PageTitle>
+
+<div class="chat-shell d-flex flex-column" style="height:calc(100vh - 56px)">
+
+    @* ── Header ── *@
+    <div class="border-bottom px-4 py-3 d-flex align-items-center gap-2 bg-white shadow-sm" style="z-index:1">
+        <span style="font-size:1.5rem">📄</span>
+        <div>
+            <div class="fw-semibold lh-1">Document Q&amp;A Bot</div>
+            <div class="text-muted" style="font-size:.75rem">Powered by RAG + OpenRouter</div>
+        </div>
+    </div>
+
+    @* ── Message list ── *@
+    <div class="flex-grow-1 overflow-y-auto px-3 px-md-5 py-4" style="background:#f5f7fb" @ref="_messagesEl">
+
+        @if (messages.Count == 0)
+        {
+            <div class="text-center text-muted mt-5 pt-5">
+                <div style="font-size:3rem">💬</div>
+                <div class="mt-2">Ask any question about the indexed document.</div>
+            </div>
+        }
+
+        @foreach (var msg in messages)
+        {
+            @if (msg.Role == "user")
+            {
+                <div class="d-flex justify-content-end mb-3">
+                    <div class="px-3 py-2 rounded-4 text-white"
+                         style="background:#0d6efd;max-width:75%;white-space:pre-wrap;word-break:break-word">
+                        @msg.Text
+                    </div>
+                </div>
+            }
+            else
+            {
+                <div class="d-flex justify-content-start mb-3 gap-2">
+                    <div class="rounded-circle bg-primary text-white d-flex align-items-center justify-content-center flex-shrink-0"
+                         style="width:32px;height:32px;font-size:.85rem;align-self:flex-end">🤖</div>
+                    <div>
+                        <div class="px-3 py-2 rounded-4 bg-white shadow-sm"
+                             style="max-width:75%;white-space:pre-wrap;word-break:break-word;border:1px solid #e3e6ea">
+                            @if (string.IsNullOrEmpty(msg.Text) && isStreaming)
+                            {
+                                <span class="text-muted fst-italic">Thinking<span class="blinking">▌</span></span>
+                            }
+                            else
+                            {
+                                @msg.Text
+                                @if (isStreaming && msg == messages[^1])
+                                {
+                                    <span class="blinking">▌</span>
+                                }
+                            }
+                        </div>
+
+                        @if (msg.Meta is not null)
+                        {
+                            <div class="text-muted mt-1 ms-1" style="font-size:.72rem">
+                                <span class="me-2">🔢 @msg.Meta.InputTokens↑ @msg.Meta.OutputTokens↓</span>
+                                <span class="me-2">💰 $@msg.Meta.CostUsd.ToString("F5")</span>
+                                <span class="me-2">@(msg.Meta.CacheHit ? "⚡ cached" : "🔍 live")</span>
+                                @if (msg.Meta.Sources?.Length > 0)
+                                {
+                                    <span>📎 @string.Join(", ", msg.Meta.Sources)</span>
+                                }
+                                @if (msg.Meta.Chunks?.Length > 0)
+                                {
+                                    <button class="btn btn-link btn-sm p-0 ms-2 text-muted"
+                                            style="font-size:.72rem;vertical-align:baseline"
+                                            @onclick="() => { msg.ShowChunks = !msg.ShowChunks; }">
+                                        @(msg.ShowChunks ? "▲ Hide sources" : "▼ Show sources")
+                                    </button>
+                                }
+                            </div>
+
+                            @if (msg.ShowChunks && msg.Meta.Chunks?.Length > 0)
+                            {
+                                <div class="mt-2" style="max-width:75%">
+                                    @foreach (var (chunk, idx) in msg.Meta.Chunks.Select((c, i) => (c, i + 1)))
+                                    {
+                                        <details class="mb-2 rounded-3 border bg-white shadow-sm" style="font-size:.8rem">
+                                            <summary class="px-3 py-2 fw-semibold" style="cursor:pointer;list-style:none;display:flex;align-items:center;gap:.4rem">
+                                                <span>📄 Source @idx</span>
+                                                <span class="text-muted fw-normal">— @chunk.Id</span>
+                                            </summary>
+                                            <div class="px-3 pb-3 pt-1 text-muted" style="white-space:pre-wrap;word-break:break-word;max-height:200px;overflow-y:auto">@chunk.Content</div>
+                                        </details>
+                                    }
+                                </div>
+                            }
+                        }
+                    </div>
+                </div>
+            }
+        }
+
+        @if (!string.IsNullOrEmpty(errorMsg))
+        {
+            <div class="alert alert-danger mx-auto mt-2" style="max-width:600px">⚠️ @errorMsg</div>
+        }
+
+        <div id="chat-bottom" @ref="_bottomAnchor"></div>
+    </div>
+
+    @* ── Input bar ── *@
+    <div class="border-top bg-white px-3 px-md-5 py-3">
+        <div class="d-flex gap-2 align-items-end" style="max-width:860px;margin:0 auto">
+            <textarea class="form-control rounded-4"
+                      rows="1"
+                      placeholder="Ask a question…"
+                      style="resize:none;overflow-y:auto;max-height:140px"
+                      @bind="query"
+                      @bind:event="oninput"
+                      @onkeydown="OnKeyDown"
+                      disabled="@isStreaming" />
+
+            @if (isStreaming)
+            {
+                <button class="btn btn-outline-secondary rounded-circle p-2 flex-shrink-0"
+                        style="width:42px;height:42px"
+                        title="Stop"
+                        @onclick="Cancel">
+                    ⏹
+                </button>
+            }
+            else
+            {
+                <button class="btn btn-primary rounded-circle p-2 flex-shrink-0"
+                        style="width:42px;height:42px"
+                        title="Send"
+                        disabled="@string.IsNullOrWhiteSpace(query)"
+                        @onclick="SendAsync">
+                    ➤
+                </button>
+            }
+        </div>
+    </div>
+</div>
+
+<style>
+    .blinking { animation: blink .9s step-end infinite; }
+    @@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+    textarea:focus { box-shadow: none !important; }
+</style>
+
+@code {
+    private record DoneMeta(int InputTokens, int OutputTokens, double CostUsd, bool CacheHit, string[]? Sources, ChunkInfo[]? Chunks);
+    private record ChatMessage(string Role, string Text, DoneMeta? Meta = null)
+    {
+        public string Text { get; set; } = Text;
+        public DoneMeta? Meta { get; set; } = Meta;
+        public bool ShowChunks { get; set; }
+    }
+
+    private List<ChatMessage> messages = [];
+    private string query    = string.Empty;
+    private string errorMsg = string.Empty;
+    private bool isStreaming;
+    private CancellationTokenSource? _cts;
+    private ElementReference _messagesEl;
+    private ElementReference _bottomAnchor;
+
+    [Inject] private IJSRuntime JS { get; set; } = default!;
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !e.ShiftKey && !isStreaming && !string.IsNullOrWhiteSpace(query))
+            await SendAsync();
+    }
+
+    private async Task SendAsync()
+    {
+        var text = query.Trim();
+        if (string.IsNullOrEmpty(text)) return;
+
+        errorMsg = string.Empty;
+        query    = string.Empty;
+
+        messages.Add(new ChatMessage("user", text));
+        var botMsg = new ChatMessage("bot", string.Empty);
+        messages.Add(botMsg);
+        isStreaming = true;
+        StateHasChanged();
+        await ScrollToBottomAsync();
+
+        _cts = new CancellationTokenSource();
+
+        try
+        {
+            await foreach (var evt in Api.StreamChatAsync(text, string.Empty, _cts.Token))
+            {
+                if (evt.Type == "token" && evt.Content is not null)
+                {
+                    botMsg.Text += evt.Content;
+                    StateHasChanged();
+                    await ScrollToBottomAsync();
+                }
+                else if (evt.Type == "done")
+                {
+                    botMsg.Meta = new DoneMeta(
+                        evt.InputTokens ?? 0,
+                        evt.OutputTokens ?? 0,
+                        evt.CostUsd,
+                        evt.CacheHit,
+                        evt.Sources,
+                        evt.Chunks);
+                }
+                else if (evt.Type == "error")
+                {
+                    errorMsg = evt.Error ?? "Unknown error.";
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { errorMsg = ex.Message; }
+        finally
+        {
+            isStreaming = false;
+            StateHasChanged();
+            await ScrollToBottomAsync();
+        }
+    }
+
+    private void Cancel() => _cts?.Cancel();
+
+    private async Task ScrollToBottomAsync()
+    {
+        try { await JS.InvokeVoidAsync("eval", "document.getElementById('chat-bottom')?.scrollIntoView({behavior:'smooth'})"); }
+        catch { }
+    }
+
+    public void Dispose() => _cts?.Dispose();
+}

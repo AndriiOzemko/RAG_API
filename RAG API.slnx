@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="RAG API.ApiService/RAG API.ApiService.csproj" />
+  <Project Path="RAG API.AppHost/RAG API.AppHost.csproj" />
+  <Project Path="RAG API.ServiceDefaults/RAG API.ServiceDefaults.csproj" />
+  <Project Path="RAG API.Web/RAG API.Web.csproj" />
+</Solution>

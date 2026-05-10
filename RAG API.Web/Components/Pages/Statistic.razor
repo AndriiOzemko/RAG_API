@@ -1,0 +1,210 @@
+﻿@page "/health"
+@using RAG_API.Web
+@inject RagApiClient Api
+
+<PageTitle>Statistic</PageTitle>
+
+<div class="container py-4" style="max-width:780px">
+    <div class="d-flex align-items-center justify-content-between mb-4">
+        <h2 class="mb-0">📊 Statistics</h2>
+        <div class="d-flex gap-2">
+            <button class="btn btn-outline-primary btn-sm" @onclick="LoadAsync" disabled="@loading">
+                @(loading ? "Loading…" : "🔄 Refresh")
+            </button>
+            <button class="btn @(indexing ? "btn-secondary" : "btn-warning") btn-sm"
+                    @onclick="RebuildAsync" disabled="@indexing">
+                @(indexing ? "⏳ Indexing…" : "🔁 Rebuild Index")
+            </button>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(indexMsg))
+    {
+        <div class="alert @(indexError ? "alert-danger" : "alert-success") py-2">@indexMsg</div>
+    }
+
+    @if (loading)
+    {
+        <p><em>Loading…</em></p>
+    }
+    else if (health is null && usage is null)
+    {
+        <div class="alert alert-danger">Could not reach API service.</div>
+    }
+    else
+    {
+        @* ── Service Health ── *@
+        @if (health is not null)
+        {
+            <div class="card shadow-sm mb-4">
+                <div class="card-header fw-semibold">🩺 Service Health</div>
+                <div class="card-body">
+                    <div class="mb-2">
+                        Status:
+                        <span class="badge @(health.Status == "healthy" ? "bg-success" : "bg-danger")">
+                            @health.Status
+                        </span>
+                    </div>
+                    <div class="row row-cols-2 row-cols-md-4 g-3 mt-1">
+                        <div class="col">
+                            <div class="border rounded p-2 text-center">
+                                <div class="fs-4 fw-bold">@health.TotalRequests</div>
+                                <div class="text-muted small">Total Requests</div>
+                            </div>
+                        </div>
+                        <div class="col">
+                            <div class="border rounded p-2 text-center">
+                                <div class="fs-4 fw-bold text-primary">@health.ActiveStreams</div>
+                                <div class="text-muted small">Active Streams</div>
+                            </div>
+                        </div>
+                        <div class="col">
+                            <div class="border rounded p-2 text-center">
+                                <div class="fs-4 fw-bold text-danger">@health.AbortedStreams</div>
+                                <div class="text-muted small">Aborted</div>
+                            </div>
+                        </div>
+                        <div class="col">
+                            <div class="border rounded p-2 text-center">
+                                <div class="fs-4 fw-bold text-success">@health.CacheHits</div>
+                                <div class="text-muted small">Cache Hits</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        }
+
+        @* ── Today's Usage ── *@
+        @if (usage is not null)
+        {
+            <div class="card shadow-sm mb-4">
+                <div class="card-header fw-semibold">📈 Today's Usage</div>
+                <div class="card-body">
+                    <div class="row row-cols-2 row-cols-md-5 g-3">
+                        <div class="col">
+                            <div class="border rounded p-2 text-center">
+                                <div class="fs-5 fw-bold">@usage.TotalRequests</div>
+                                <div class="text-muted small">Requests</div>
+                            </div>
+                        </div>
+                        <div class="col">
+                            <div class="border rounded p-2 text-center">
+                                <div class="fs-5 fw-bold">@usage.TotalTokens.ToString("N0")</div>
+                                <div class="text-muted small">Tokens</div>
+                            </div>
+                        </div>
+                        <div class="col">
+                            <div class="border rounded p-2 text-center">
+                                <div class="fs-5 fw-bold">$@usage.TotalCostUsd.ToString("F4")</div>
+                                <div class="text-muted small">Cost</div>
+                            </div>
+                        </div>
+                        <div class="col">
+                            <div class="border rounded p-2 text-center">
+                                <div class="fs-5 fw-bold">@((usage.CacheHitRate * 100).ToString("F1"))%</div>
+                                <div class="text-muted small">Cache Rate</div>
+                            </div>
+                        </div>
+                        <div class="col">
+                            <div class="border rounded p-2 text-center">
+                                <div class="fs-5 fw-bold">@usage.AvgLatencyMs.ToString("F0") ms</div>
+                                <div class="text-muted small">Avg Latency</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        }
+
+        @* ── Model Breakdown ── *@
+        @if (breakdown is { Count: > 0 })
+        {
+            <div class="card shadow-sm">
+                <div class="card-header fw-semibold">🤖 Model Breakdown (Today)</div>
+                <div class="card-body p-0">
+                    <table class="table table-sm table-hover mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Model</th>
+                                <th class="text-end">Requests</th>
+                                <th class="text-end">Cost</th>
+                                <th class="text-end">Cache Rate</th>
+                                <th class="text-end">Avg Latency</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var row in breakdown)
+                            {
+                                <tr>
+                                    <td class="font-monospace small">@row.Model</td>
+                                    <td class="text-end">@row.Requests</td>
+                                    <td class="text-end">$@row.TotalCostUsd.ToString("F4")</td>
+                                    <td class="text-end">@((row.CacheHitRate * 100).ToString("F1"))%</td>
+                                    <td class="text-end">@row.AvgLatencyMs.ToString("F0") ms</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        }
+    }
+</div>
+
+@code {
+    private HealthInfo?        health;
+    private UsageSummary?      usage;
+    private List<ModelBreakdown>? breakdown;
+    private bool loading  = true;
+    private bool indexing = false;
+    private string indexMsg  = string.Empty;
+    private bool   indexError = false;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        loading = true;
+        StateHasChanged();
+        try
+        {
+            health    = await Api.GetHealthAsync();
+            usage     = await Api.GetUsageTodayAsync();
+            breakdown = await Api.GetUsageBreakdownAsync();
+        }
+        catch
+        {
+            health    = null;
+            usage     = null;
+            breakdown = null;
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task RebuildAsync()
+    {
+        indexing  = true;
+        indexMsg  = string.Empty;
+        indexError = false;
+        StateHasChanged();
+        try
+        {
+            var ok = await Api.RebuildIndexAsync();
+            indexMsg   = ok ? "✅ Indexing started successfully." : "❌ Failed to start indexing.";
+            indexError = !ok;
+        }
+        catch (Exception ex)
+        {
+            indexMsg   = $"❌ Error: {ex.Message}";
+            indexError = true;
+        }
+        finally
+        {
+            indexing = false;
+        }
+    }
+}
