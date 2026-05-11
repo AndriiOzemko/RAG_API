@@ -11,6 +11,7 @@ namespace RAG_API.ApiService.Controllers;
 
 [ApiController]
 [Route("chat")]
+[ApiKeyAuth]
 public sealed class ChatController(
     RagService rag,
     RateLimiter limiter,
@@ -21,8 +22,8 @@ public sealed class ChatController(
     [HttpPost("stream")]
     public async Task StreamAsync([FromBody] ChatRequest req)
     {
-        var keyInfo = AuthConfig.AnonymousKeyInfo;
-        var tier    = AuthConfig.AnonymousTier;
+        var keyInfo = HttpContext.GetApiKeyInfo();
+        var tier    = HttpContext.GetTierInfo();
 
         // ── SSE headers ──────────────────────────────────────────────────────
         Response.Headers.ContentType  = "text/event-stream";
@@ -32,10 +33,28 @@ public sealed class ChatController(
         metrics.IncrementRequests();
         metrics.IncrementActive();
 
+        var ct = HttpContext.RequestAborted;
+
+        // ── Pre-flight rate limit check (no tokens consumed yet) ─────────────
+        if (await limiter.IsExceededAsync(keyInfo.Key, tier.RateLimitTokensPerMin))
+        {
+            int retryAfter = await limiter.GetRetryAfterSecondsAsync(keyInfo.Key);
+            Response.Headers["Retry-After"] = retryAfter.ToString();
+            Response.StatusCode = 429;
+            await SseWriter.WriteAsync(Response, System.Text.Json.JsonSerializer.Serialize(new
+            {
+                type        = "error",
+                code        = 429,
+                message     = "Rate limit exceeded.",
+                retry_after = retryAfter,
+            }, JsonConfig.Default), ct);
+            metrics.DecrementActive();
+            return;
+        }
+
         bool aborted = false;
         var sw = System.Diagnostics.Stopwatch.StartNew();
         ChatStreamResult? doneResult = null;
-        var ct = HttpContext.RequestAborted;
 
         try
         {
@@ -58,6 +77,31 @@ public sealed class ChatController(
                     doneResult = result;
                     if (result.CacheHit)
                         metrics.IncrementCacheHits();
+
+                    // ── Rate limit: consume actual tokens after LLM response ──
+                    int totalTokens = result.InputTokens + result.OutputTokens;
+                    if (totalTokens > 0)
+                    {
+                        bool allowed = await limiter.TryConsumeAsync(
+                            keyInfo.Key, totalTokens, tier.RateLimitTokensPerMin, ct);
+
+                        if (!allowed)
+                        {
+                            int retryAfter = await limiter.GetRetryAfterSecondsAsync(keyInfo.Key);
+                            // Signal the client via a rate-limit SSE event before closing
+                            var rlPayload = JsonSerializer.Serialize(new
+                            {
+                                type        = "error",
+                                code        = 429,
+                                message     = "Rate limit exceeded.",
+                                retry_after = retryAfter,
+                            }, JsonConfig.Default);
+                            await SseWriter.WriteAsync(Response, rlPayload, ct);
+
+                            Response.Headers["Retry-After"] = retryAfter.ToString();
+                            return;
+                        }
+                    }
 
                     var donePayload = JsonSerializer.Serialize(new
                     {

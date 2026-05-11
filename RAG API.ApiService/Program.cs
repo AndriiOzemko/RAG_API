@@ -11,6 +11,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.AddServiceDefaults();
 
 // ── Core services ────────────────────────────────────────────────────────────
+builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<VectorDb>();
 builder.Services.AddSingleton<EmbeddingService>();
 builder.Services.AddSingleton<DocumentChunker>();

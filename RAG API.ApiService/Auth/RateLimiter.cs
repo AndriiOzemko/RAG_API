@@ -1,45 +1,71 @@
-using System.Collections.Concurrent;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace RAG_API.ApiService.Auth;
 
 /// <summary>
-/// Sliding-window token-per-minute rate limiter per API key.
+/// Token-bucket rate limiter backed by <see cref="IMemoryCache"/>.
+/// One bucket per API key per calendar minute (UTC).
 /// </summary>
-public sealed class RateLimiter
+public sealed class RateLimiter(IMemoryCache cache)
 {
-    private sealed class Window
+    private sealed class Bucket
     {
-        public long WindowStartTicks;
-        public int TokensUsed;
+        public int Tokens;
+        public readonly DateTime ExpiresAt = DateTime.UtcNow.AddSeconds(60);
     }
 
-    private static readonly long TicksPerMinute = TimeSpan.FromMinutes(1).Ticks;
-    private readonly ConcurrentDictionary<string, Window> _windows = new(StringComparer.Ordinal);
+    /// <summary>
+    /// Atomically adds <paramref name="tokens"/> to the current-minute bucket and
+    /// returns <c>true</c> when the total stays within <paramref name="limitPerMin"/>.
+    /// </summary>
+    public Task<bool> TryConsumeAsync(
+        string apiKey,
+        int tokens,
+        int limitPerMin,
+        CancellationToken ct = default)
+    {
+        var minuteStamp = DateTime.UtcNow.ToString("yyyyMMddHHmm");
+        var bucketKey   = $"rl:{apiKey}:{minuteStamp}";
+
+        var bucket = cache.GetOrCreate(bucketKey, entry =>
+        {
+            entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(60);
+            return new Bucket();
+        })!;
+
+        int newTotal;
+        lock (bucket)
+            newTotal = bucket.Tokens += tokens;
+
+        return Task.FromResult(newTotal <= limitPerMin);
+    }
 
     /// <summary>
-    /// Returns true when the request is allowed; increments usage by <paramref name="tokens"/>.
-    /// Returns false when the limit is exceeded.
+    /// Returns <c>true</c> when the current bucket is already at or above the limit,
+    /// without modifying the token count. Use this for a pre-flight check.
     /// </summary>
-    public bool TryConsume(string apiKey, int tokens, int limitPerMin)
+    public Task<bool> IsExceededAsync(string apiKey, int limitPerMin)
     {
-        var window = _windows.GetOrAdd(apiKey, _ => new Window { WindowStartTicks = DateTime.UtcNow.Ticks });
+        var minuteStamp = DateTime.UtcNow.ToString("yyyyMMddHHmm");
+        var bucketKey   = $"rl:{apiKey}:{minuteStamp}";
 
-        long now = DateTime.UtcNow.Ticks;
+        bool exceeded = cache.TryGetValue(bucketKey, out Bucket? bucket)
+                        && bucket is not null
+                        && bucket.Tokens >= limitPerMin;
 
-        lock (window)
-        {
-            // Reset window if a minute has elapsed
-            if (now - window.WindowStartTicks >= TicksPerMinute)
-            {
-                window.WindowStartTicks = now;
-                window.TokensUsed = 0;
-            }
+        return Task.FromResult(exceeded);
+    }
 
-            if (window.TokensUsed + tokens > limitPerMin)
-                return false;
+    /// <summary>Returns seconds until the current bucket expires (used for Retry-After).</summary>
+    public Task<int> GetRetryAfterSecondsAsync(string apiKey)
+    {
+        var minuteStamp = DateTime.UtcNow.ToString("yyyyMMddHHmm");
+        var bucketKey   = $"rl:{apiKey}:{minuteStamp}";
 
-            window.TokensUsed += tokens;
-            return true;
-        }
+        int seconds = cache.TryGetValue(bucketKey, out Bucket? bucket) && bucket is not null
+            ? Math.Max(1, (int)(bucket.ExpiresAt - DateTime.UtcNow).TotalSeconds)
+            : 60;
+
+        return Task.FromResult(seconds);
     }
 }

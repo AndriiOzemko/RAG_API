@@ -58,8 +58,4 @@ public static class AuthConfig
     }
 
     public static TierInfo GetTier(string tierName) => Tiers[tierName];
-
-    /// <summary>Default tier used when authentication is disabled.</summary>
-    public static readonly ApiKeyInfo AnonymousKeyInfo = new("anonymous", "demo-enterprise");
-    public static readonly TierInfo   AnonymousTier    = Tiers["demo-enterprise"];
 }

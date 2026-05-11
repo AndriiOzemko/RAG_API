@@ -8,11 +8,22 @@
 <div class="chat-shell d-flex flex-column" style="height:calc(100dvh - 3.5rem);margin:-1rem -1rem 0">
 
     @* ── Header ── *@
-    <div class="border-bottom px-4 py-3 d-flex align-items-center gap-2 bg-white shadow-sm" style="z-index:1">
+    <div class="border-bottom px-4 py-3 d-flex align-items-center gap-3 bg-white shadow-sm" style="z-index:1">
         <span style="font-size:1.5rem">📄</span>
-        <div>
+        <div class="flex-grow-1">
             <div class="fw-semibold lh-1">Document Q&amp;A Bot</div>
             <div class="text-muted" style="font-size:.75rem">Powered by RAG + OpenRouter</div>
+        </div>
+        <div class="d-flex align-items-center gap-2" style="min-width:260px">
+            <label class="text-muted mb-0 text-nowrap" style="font-size:.8rem">API Key</label>
+            <select class="form-select form-select-sm rounded-3"
+                    @bind="apiKey">
+                <option value="">— select a key —</option>
+                <option value="demo-free-key-abc123">demo-free (5k tpm)</option>
+                <option value="demo-pro-key-def456">demo-pro (20k tpm)</option>
+                <option value="demo-enterprise-key-ghi789">demo-enterprise (100k tpm)</option>
+                <option value="invalid-key-000000">invalid key (401)</option>
+            </select>
         </div>
     </div>
 
@@ -161,6 +172,7 @@
 
     private List<ChatMessage> messages = [];
     private string query    = string.Empty;
+    private string apiKey   = string.Empty;
     private string errorMsg = string.Empty;
     private bool isStreaming;
     private CancellationTokenSource? _cts;
@@ -180,6 +192,13 @@
         var text = query.Trim();
         if (string.IsNullOrEmpty(text)) return;
 
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            errorMsg = "Please select an API key.";
+            StateHasChanged();
+            return;
+        }
+
         errorMsg = string.Empty;
         query    = string.Empty;
 
@@ -194,7 +213,7 @@
 
         try
         {
-            await foreach (var evt in Api.StreamChatAsync(text, string.Empty, _cts.Token))
+            await foreach (var evt in Api.StreamChatAsync(text, apiKey, _cts.Token))
             {
                 if (evt.Type == "token" && evt.Content is not null)
                 {
@@ -215,6 +234,9 @@
                 else if (evt.Type == "error")
                 {
                     errorMsg = evt.Error ?? "Unknown error.";
+                    // Remove the empty bot placeholder on auth/rate errors
+                    if (string.IsNullOrEmpty(botMsg.Text))
+                        messages.Remove(botMsg);
                 }
             }
         }

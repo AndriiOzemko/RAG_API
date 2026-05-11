@@ -11,6 +11,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Aspire.StackExchange.Redis" Version="13.3.0" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.7" />
     <PackageReference Include="Aspire.Microsoft.Data.SqlClient" Version="13.3.0" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.1" />

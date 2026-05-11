@@ -31,7 +31,14 @@ public class RagApiClient(HttpClient httpClient)
         if (!response.IsSuccessStatusCode)
         {
             var body = await response.Content.ReadAsStringAsync(ct);
-            yield return new SseEvent("error", null, body, null, null, false, null);
+            var msg  = response.StatusCode switch
+            {
+                System.Net.HttpStatusCode.Unauthorized  => "Invalid or missing API key (401).",
+                System.Net.HttpStatusCode.TooManyRequests =>
+                    $"Rate limit exceeded. Retry after {response.Headers.RetryAfter?.Delta?.TotalSeconds ?? 60:0}s (429).",
+                _ => $"HTTP {(int)response.StatusCode}: {body}",
+            };
+            yield return new SseEvent("error", null, msg, null, null, false, null);
             yield break;
         }
 
