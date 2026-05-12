@@ -15,11 +15,13 @@ public record ChatStreamResult(
     double CostUsd,
     bool CacheHit,
     string[] Sources,
-    ChunkResult[] Chunks);
+    ChunkResult[] Chunks,
+    string ModelUsed   = "",
+    bool FallbackUsed  = false);
 
 /// <summary>
 /// Core RAG workflow:
-///   embed query → cache check → vector search → LLM call with fallback → stream
+///   embed query → cache check → vector search → LLM call with OpenRouter fallback → stream
 /// </summary>
 public sealed class RagService
 {
@@ -100,61 +102,79 @@ public sealed class RagService
         var context = string.Join("\n\n---\n\n",
             chunks.Select((c, i) => $"[Source {i + 1}: {c.Id}]\n{c.Content}"));
 
-        // ── 4. LLM call with fallback chain ─────────────────────────────────
+        // ── 4. LLM call with simple model fallback ──────────────────────────
         var apiKey = _config["OpenRouter:ApiKey"]
             ?? throw new InvalidOperationException("OpenRouter:ApiKey is required.");
 
+        var client = new OpenAIClient(
+            new ApiKeyCredential(apiKey),
+            new OpenAIClientOptions { Endpoint = new Uri("https://openrouter.ai/api/v1") });
+
+        var messages = new List<ChatMessage>
+        {
+            ChatMessage.CreateSystemMessage("""
+                You are a helpful Q&A assistant. Answer the user's question using ONLY
+                the provided context below. If the answer is not in the context, say so.
+                Be concise and accurate.
+                """),
+            ChatMessage.CreateUserMessage($"Context:\n{context}\n\nQuestion: {query}")
+        };
+
+        // Try each model in order until one succeeds
         string? modelUsed = null;
-        AsyncCollectionResult<StreamingChatCompletionUpdate>? stream = null;
-        Exception? lastError = null;
+        bool fallbackUsed = false;
+        IAsyncEnumerator<StreamingChatCompletionUpdate>? successfulEnumerator = null;
 
         foreach (var model in tier.Models)
         {
             try
             {
-                var client = new OpenAIClient(
-                    new System.ClientModel.ApiKeyCredential(apiKey),
-                    new OpenAIClientOptions { Endpoint = new Uri("https://openrouter.ai/api/v1") });
-
                 var chat = client.GetChatClient(model);
+                var stream = chat.CompleteChatStreamingAsync(messages, cancellationToken: ct);
+                var enumerator = stream.GetAsyncEnumerator(ct);
 
-                var messages = new List<ChatMessage>
+                // Test if stream starts successfully
+                if (await enumerator.MoveNextAsync())
                 {
-                    ChatMessage.CreateSystemMessage("""
-                        You are a helpful Q&A assistant. Answer the user's question using ONLY
-                        the provided context below. If the answer is not in the context, say so.
-                        Be concise and accurate.
-                        """),
-                    ChatMessage.CreateUserMessage(
-                        $"Context:\n{context}\n\nQuestion: {query}"),
-                };
+                    modelUsed = model;
+                    fallbackUsed = model != tier.Models[0];
+                    successfulEnumerator = enumerator;
 
-                stream = chat.CompleteChatStreamingAsync(messages, cancellationToken: ct);
-                modelUsed = model;
-                break;
+                    if (fallbackUsed)
+                        _log.LogWarning("Fallback used: {ModelUsed} (primary was {Primary})", modelUsed, tier.Models[0]);
+
+                    break; // Success - exit model loop
+                }
+                else
+                {
+                    await enumerator.DisposeAsync();
+                    _log.LogWarning("Model {Model} returned empty stream, trying next...", model);
+
+                    if (model == tier.Models[^1])
+                        throw new InvalidOperationException("All models returned empty streams");
+                }
             }
             catch (Exception ex)
             {
-                _log.LogWarning(ex, "Model {Model} failed, trying next fallback", model);
-                lastError = ex;
+                _log.LogWarning(ex, "Model {Model} failed, trying next...", model);
+
+                if (model == tier.Models[^1])
+                    throw new InvalidOperationException($"All models failed. Last error: {ex.Message}", ex);
             }
         }
 
-        if (stream is null || modelUsed is null)
-        {
-            throw lastError ?? new InvalidOperationException("All models in fallback chain failed.");
-        }
+        if (modelUsed == null || successfulEnumerator == null)
+            throw new InvalidOperationException("No model succeeded");
 
-        // ── 5. Stream tokens ────────────────────────────────────────────────
+        // ── 5. Stream tokens (outside try-catch to allow yield) ─────────────
         int inputTokens = 0, outputTokens = 0;
         var fullAnswer = new System.Text.StringBuilder();
 
-        await foreach (var update in stream!)
+        try
         {
-            if (await disconnected())
-                yield break;
-
-            foreach (var part in update.ContentUpdate)
+            // Process first update (already retrieved during validation)
+            var firstUpdate = successfulEnumerator.Current;
+            foreach (var part in firstUpdate.ContentUpdate)
             {
                 if (!string.IsNullOrEmpty(part.Text))
                 {
@@ -165,11 +185,41 @@ public sealed class RagService
                 }
             }
 
-            if (update.Usage is { } u)
+            if (firstUpdate.Usage is { } firstUsage)
             {
-                inputTokens  = u.InputTokenCount;
-                outputTokens = u.OutputTokenCount;
+                inputTokens = firstUsage.InputTokenCount;
+                outputTokens = firstUsage.OutputTokenCount;
             }
+
+            // Process remaining updates
+            while (await successfulEnumerator.MoveNextAsync())
+            {
+                if (await disconnected())
+                    yield break;
+
+                var update = successfulEnumerator.Current;
+
+                foreach (var part in update.ContentUpdate)
+                {
+                    if (!string.IsNullOrEmpty(part.Text))
+                    {
+                        fullAnswer.Append(part.Text);
+                        yield return new ChatStreamResult(
+                            Type: "token", Content: part.Text,
+                            0, 0, 0, false, [], []);
+                    }
+                }
+
+                if (update.Usage is { } u)
+                {
+                    inputTokens = u.InputTokenCount;
+                    outputTokens = u.OutputTokenCount;
+                }
+            }
+        }
+        finally
+        {
+            await successfulEnumerator.DisposeAsync();
         }
 
         // ── 6. Cost calculation ─────────────────────────────────────────────
@@ -192,7 +242,9 @@ public sealed class RagService
             CostUsd: cost,
             CacheHit: false,
             Sources: sourceIds,
-            Chunks: [.. chunks]);
+            Chunks: [.. chunks],
+            ModelUsed: modelUsed,
+            FallbackUsed: fallbackUsed);
     }
 
     private static IEnumerable<string> SplitIntoTokens(string text)

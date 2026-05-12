@@ -20,9 +20,9 @@ public static class AuthConfig
             RateLimitTokensPerMin: 5_000,
             Models:
             [
-                "meta-llama/llama-3.1-8b-instruct",
-                "google/gemini-flash-1.5",
-                "meta-llama/llama-3.2-3b-instruct:free",
+                "11meta-llama/llama-3.1-8b-instruct--111",
+                "google/gemini-3.1-flash-lite",
+                "openai/gpt-chat-latest",
             ]),
 
         ["demo-pro"] = new TierInfo(

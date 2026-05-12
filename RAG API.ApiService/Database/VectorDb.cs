@@ -40,8 +40,18 @@ public sealed class VectorDb
                 CostUsd         FLOAT NOT NULL DEFAULT 0,
                 CacheHit        BIT NOT NULL DEFAULT 0,
                 LatencyMs       INT NOT NULL DEFAULT 0,
-                Aborted         BIT NOT NULL DEFAULT 0
+                Aborted         BIT NOT NULL DEFAULT 0,
+                Fallback        BIT NOT NULL DEFAULT 0
             );
+            """, ct);
+
+        // Add Fallback column to existing table if missing
+        await ExecAsync(conn, """
+            IF OBJECT_ID('dbo.UsageLog','U') IS NOT NULL 
+                AND COL_LENGTH('dbo.UsageLog', 'Fallback') IS NULL
+            BEGIN
+                ALTER TABLE dbo.UsageLog ADD Fallback BIT NOT NULL DEFAULT 0;
+            END
             """, ct);
 
         // Chunks table with native VECTOR column
@@ -217,9 +227,9 @@ public sealed class VectorDb
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             INSERT INTO dbo.UsageLog
-                (ApiKey, Tier, Model, InputTokens, OutputTokens, CostUsd, CacheHit, LatencyMs, Aborted)
+                (ApiKey, Tier, Model, InputTokens, OutputTokens, CostUsd, CacheHit, LatencyMs, Aborted, Fallback)
             VALUES
-                (@ApiKey, @Tier, @Model, @Input, @Output, @Cost, @CacheHit, @Latency, @Aborted);
+                (@ApiKey, @Tier, @Model, @Input, @Output, @Cost, @CacheHit, @Latency, @Aborted, @Fallback);
             """;
         cmd.Parameters.AddWithValue("@ApiKey", entry.ApiKey);
         cmd.Parameters.AddWithValue("@Tier", entry.Tier);
@@ -230,6 +240,7 @@ public sealed class VectorDb
         cmd.Parameters.AddWithValue("@CacheHit", entry.CacheHit);
         cmd.Parameters.AddWithValue("@Latency", entry.LatencyMs);
         cmd.Parameters.AddWithValue("@Aborted", entry.Aborted);
+        cmd.Parameters.AddWithValue("@Fallback", entry.Fallback);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -273,7 +284,8 @@ public sealed class VectorDb
                 COUNT(*)                AS Requests,
                 ISNULL(SUM(CostUsd), 0) AS TotalCostUsd,
                 ISNULL(AVG(CAST(CacheHit AS FLOAT)), 0)  AS CacheHitRate,
-                ISNULL(AVG(CAST(LatencyMs AS FLOAT)), 0) AS AvgLatencyMs
+                ISNULL(AVG(CAST(LatencyMs AS FLOAT)), 0) AS AvgLatencyMs,
+                ISNULL(SUM(CAST(Fallback AS INT)), 0)    AS FallbackCount
             FROM dbo.UsageLog
             WHERE CAST(CreatedAt AS DATE) = CAST(SYSUTCDATETIME() AS DATE)
             GROUP BY Model
@@ -286,7 +298,7 @@ public sealed class VectorDb
         {
             rows.Add(new ModelBreakdown(
                 r.GetString(0), r.GetInt32(1),
-                r.GetDouble(2), r.GetDouble(3), r.GetDouble(4)));
+                r.GetDouble(2), r.GetDouble(3), r.GetDouble(4), r.GetInt32(5)));
         }
 
         return rows;
@@ -315,7 +327,7 @@ public record CacheEntry(string QueryText, string Answer, string[] Sources);
 public record UsageEntry(
     string ApiKey, string Tier, string Model,
     int InputTokens, int OutputTokens,
-    double CostUsd, bool CacheHit, int LatencyMs, bool Aborted);
+    double CostUsd, bool CacheHit, int LatencyMs, bool Aborted, bool Fallback);
 
 public record UsageSummary(
     int TotalRequests, long TotalTokens,
@@ -323,4 +335,4 @@ public record UsageSummary(
 
 public record ModelBreakdown(
     string Model, int Requests,
-    double TotalCostUsd, double CacheHitRate, double AvgLatencyMs);
+    double TotalCostUsd, double CacheHitRate, double AvgLatencyMs, int FallbackCount);

@@ -131,6 +131,7 @@
                                 <th class="text-end">Cost</th>
                                 <th class="text-end">Cache Rate</th>
                                 <th class="text-end">Avg Latency</th>
+                                <th class="text-end">Fallbacks</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -142,6 +143,16 @@
                                     <td class="text-end">$@row.TotalCostUsd.ToString("F4")</td>
                                     <td class="text-end">@((row.CacheHitRate * 100).ToString("F1"))%</td>
                                     <td class="text-end">@row.AvgLatencyMs.ToString("F0") ms</td>
+                                    <td class="text-end">
+                                        @if (row.FallbackCount > 0)
+                                        {
+                                            <span class="badge bg-warning text-dark">@row.FallbackCount</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="text-muted">0</span>
+                                        }
+                                    </td>
                                 </tr>
                             }
                         </tbody>

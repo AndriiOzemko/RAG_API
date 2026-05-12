@@ -111,6 +111,8 @@ public sealed class ChatController(
                         cache_hit = result.CacheHit,
                         sources   = result.Sources,
                         chunks    = result.Chunks.Select(c => new { id = c.Id, content = c.Content }),
+                        model_used = result.ModelUsed,
+                        fallback_used = result.FallbackUsed,
                     }, JsonConfig.Default);
 
                     await SseWriter.WriteAsync(Response, donePayload, ct);
@@ -133,19 +135,20 @@ public sealed class ChatController(
                 _ = db.LogUsageAsync(new UsageEntry(
                     ApiKey:       keyInfo.Key,
                     Tier:         keyInfo.Tier,
-                    Model:        tier.Models[0],
+                    Model:        doneResult.ModelUsed,
                     InputTokens:  doneResult.InputTokens,
                     OutputTokens: doneResult.OutputTokens,
                     CostUsd:      doneResult.CostUsd,
                     CacheHit:     doneResult.CacheHit,
                     LatencyMs:    (int)sw.ElapsedMilliseconds,
-                    Aborted:      false));
+                    Aborted:      false,
+                    Fallback:     doneResult.FallbackUsed));
             }
             else if (aborted)
             {
                 _ = db.LogUsageAsync(new UsageEntry(
                     keyInfo.Key, keyInfo.Tier, tier.Models[0],
-                    0, 0, 0, false, (int)sw.ElapsedMilliseconds, Aborted: true));
+                    0, 0, 0, false, (int)sw.ElapsedMilliseconds, Aborted: true, Fallback: false));
             }
         }
         catch (OperationCanceledException)

@@ -91,7 +91,15 @@ public class RagApiClient(HttpClient httpClient)
                         if (root.TryGetProperty("chunks", out var ch2))
                             chunks = ch2.Deserialize<ChunkInfo[]>(JsonOpts);
 
-                        evt = new SseEvent("done", null, null, inputTokens, outputTokens, cacheHit, sources, chunks) { CostUsd = cost };
+                        string? modelUsed = root.TryGetProperty("model_used", out var mu) ? mu.GetString() : null;
+                        bool fallbackUsed = root.TryGetProperty("fallback_used", out var fu) && fu.GetBoolean();
+
+                        evt = new SseEvent("done", null, null, inputTokens, outputTokens, cacheHit, sources, chunks) 
+                        { 
+                            CostUsd = cost,
+                            ModelUsed = modelUsed,
+                            FallbackUsed = fallbackUsed
+                        };
                     }
                 }
                 catch { /* malformed frame — skip */ }
@@ -148,6 +156,8 @@ public record SseEvent(
     ChunkInfo[]? Chunks = null)
 {
     public double CostUsd { get; init; }
+    public string? ModelUsed { get; init; }
+    public bool FallbackUsed { get; init; }
 }
 
 public record ChunkInfo(string Id, string Content);
@@ -171,4 +181,5 @@ public record ModelBreakdown(
     int Requests,
     double TotalCostUsd,
     double CacheHitRate,
-    double AvgLatencyMs);
+    double AvgLatencyMs,
+    int FallbackCount);
