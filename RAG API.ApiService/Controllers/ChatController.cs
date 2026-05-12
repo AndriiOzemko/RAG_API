@@ -19,7 +19,9 @@ public sealed class ChatController(
     AppMetrics metrics,
     VectorDb db,
     PromptInjectionDetector injectionDetector,
-    SuspiciousActivityLogger suspiciousLogger) : ControllerBase
+    SuspiciousActivityLogger suspiciousLogger,
+    ConcurrencyController concurrency,
+    ILogger<ChatController> logger) : ControllerBase
 {
     /// <summary>POST /chat/stream — SSE streaming RAG response.</summary>
     [HttpPost("stream")]
@@ -77,12 +79,18 @@ public sealed class ChatController(
         }
 
         bool aborted = false;
+        bool streamStarted = false;
         var sw = System.Diagnostics.Stopwatch.StartNew();
         ChatStreamResult? doneResult = null;
         var accumulatedAnswer = new System.Text.StringBuilder();
 
         try
         {
+            // ── Acquire concurrency slot ─────────────────────────────────────
+            logger.LogDebug("Acquiring concurrency slot for {Key}", keyInfo.Key);
+            using var slot = await concurrency.AcquireAsync(ct);
+            logger.LogDebug("Concurrency slot acquired for {Key}", keyInfo.Key);
+
             await foreach (var result in rag.StreamAsync(
                 req.Message, tier,
                 disconnected: () => HttpContext.RequestAborted.IsCancellationRequested
@@ -90,10 +98,13 @@ public sealed class ChatController(
                     : Task.FromResult(false),
                 ct: ct))
             {
+                streamStarted = true;
+
                 if (HttpContext.RequestAborted.IsCancellationRequested)
                 {
                     aborted = true;
                     metrics.IncrementAborted();
+                    logger.LogInformation("Client disconnected during stream for {Key}", keyInfo.Key);
                     break;
                 }
 
@@ -170,7 +181,7 @@ public sealed class ChatController(
                 }
             }
 
-            // ── Log cost ─────────────────────────────────────────────────────
+            // ── Log cost (ONLY if request completed successfully, not aborted) ───
             if (doneResult is not null && !aborted)
             {
                 _ = db.LogUsageAsync(new UsageEntry(
@@ -185,21 +196,33 @@ public sealed class ChatController(
                     Aborted:      false,
                     Fallback:     doneResult.FallbackUsed,
                     OutputFiltered: outputFiltered));
+
+                logger.LogInformation(
+                    "Request completed: {Key}, model={Model}, tokens={Tokens}, cost=${Cost:F4}",
+                    keyInfo.Key, doneResult.ModelUsed, 
+                    doneResult.InputTokens + doneResult.OutputTokens, doneResult.CostUsd);
             }
             else if (aborted)
             {
-                _ = db.LogUsageAsync(new UsageEntry(
-                    keyInfo.Key, keyInfo.Tier, tier.Models[0],
-                    0, 0, 0, false, (int)sw.ElapsedMilliseconds, Aborted: true, Fallback: false, OutputFiltered: false));
+                // Do NOT log aborted requests to usage tracker
+                logger.LogInformation("Request aborted, not logging usage: {Key}", keyInfo.Key);
             }
         }
         catch (OperationCanceledException)
         {
+            aborted = true;
             metrics.IncrementAborted();
+            logger.LogInformation("Request cancelled (client disconnect): {Key}", keyInfo.Key);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error during stream for {Key}", keyInfo.Key);
+            throw;
         }
         finally
         {
             metrics.DecrementActive();
+            logger.LogDebug("Released active stream slot for {Key}", keyInfo.Key);
         }
     }
 }
