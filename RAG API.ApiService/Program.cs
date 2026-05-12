@@ -3,6 +3,7 @@ using RAG_API.ApiService.Auth;
 using RAG_API.ApiService.Database;
 using RAG_API.ApiService.Metrics;
 using RAG_API.ApiService.Rag;
+using RAG_API.ApiService.Security;
 using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -19,6 +20,8 @@ builder.Services.AddSingleton<IndexingService>();
 builder.Services.AddSingleton<RagService>();
 builder.Services.AddSingleton<RateLimiter>();
 builder.Services.AddSingleton<AppMetrics>();
+builder.Services.AddSingleton<PromptInjectionDetector>();
+builder.Services.AddSingleton<SuspiciousActivityLogger>();
 
 builder.Services.AddControllers();
 builder.Services.AddProblemDetails();

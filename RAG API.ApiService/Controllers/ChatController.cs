@@ -6,6 +6,7 @@ using RAG_API.ApiService.Infrastructure;
 using RAG_API.ApiService.Metrics;
 using RAG_API.ApiService.Models;
 using RAG_API.ApiService.Rag;
+using RAG_API.ApiService.Security;
 
 namespace RAG_API.ApiService.Controllers;
 
@@ -16,7 +17,9 @@ public sealed class ChatController(
     RagService rag,
     RateLimiter limiter,
     AppMetrics metrics,
-    VectorDb db) : ControllerBase
+    VectorDb db,
+    PromptInjectionDetector injectionDetector,
+    SuspiciousActivityLogger suspiciousLogger) : ControllerBase
 {
     /// <summary>POST /chat/stream — SSE streaming RAG response.</summary>
     [HttpPost("stream")]
@@ -24,6 +27,27 @@ public sealed class ChatController(
     {
         var keyInfo = HttpContext.GetApiKeyInfo();
         var tier    = HttpContext.GetTierInfo();
+
+        // ── Input validation: length & prompt injection ──────────────────────
+        var validationError = injectionDetector.ValidateInput(req.Message, keyInfo.Key, out var detectedPattern);
+        if (validationError != null)
+        {
+            if (detectedPattern != null)
+            {
+                // Log suspicious request
+                suspiciousLogger.LogSuspiciousRequest(keyInfo.Key, keyInfo.Tier, req.Message, detectedPattern);
+            }
+
+            Response.StatusCode = 400;
+            await Response.WriteAsJsonAsync(new
+            {
+                type = "https://tools.ietf.org/html/rfc9110#section-15.5.1",
+                title = "Bad Request",
+                status = 400,
+                detail = validationError
+            }, cancellationToken: HttpContext.RequestAborted);
+            return;
+        }
 
         // ── SSE headers ──────────────────────────────────────────────────────
         Response.Headers.ContentType  = "text/event-stream";
@@ -55,6 +79,7 @@ public sealed class ChatController(
         bool aborted = false;
         var sw = System.Diagnostics.Stopwatch.StartNew();
         ChatStreamResult? doneResult = null;
+        var accumulatedAnswer = new System.Text.StringBuilder();
 
         try
         {
@@ -119,6 +144,10 @@ public sealed class ChatController(
                 }
                 else
                 {
+                    // Accumulate tokens for output filtering
+                    if (!string.IsNullOrEmpty(result.Content))
+                        accumulatedAnswer.Append(result.Content);
+
                     var tokenPayload = JsonSerializer.Serialize(new
                     {
                         type    = "token",
@@ -126,6 +155,18 @@ public sealed class ChatController(
                     }, JsonConfig.Default);
 
                     await SseWriter.WriteAsync(Response, tokenPayload, ct);
+                }
+            }
+
+            // ── Output filtering: check for system prompt leaks ──────────────
+            bool outputFiltered = false;
+            if (doneResult is not null && !doneResult.CacheHit && accumulatedAnswer.Length > 0)
+            {
+                if (injectionDetector.ContainsSystemPromptLeak(accumulatedAnswer.ToString()))
+                {
+                    outputFiltered = true;
+                    suspiciousLogger.LogSuspiciousResponse(
+                        keyInfo.Key, keyInfo.Tier, doneResult.ModelUsed, accumulatedAnswer.ToString());
                 }
             }
 
@@ -142,13 +183,14 @@ public sealed class ChatController(
                     CacheHit:     doneResult.CacheHit,
                     LatencyMs:    (int)sw.ElapsedMilliseconds,
                     Aborted:      false,
-                    Fallback:     doneResult.FallbackUsed));
+                    Fallback:     doneResult.FallbackUsed,
+                    OutputFiltered: outputFiltered));
             }
             else if (aborted)
             {
                 _ = db.LogUsageAsync(new UsageEntry(
                     keyInfo.Key, keyInfo.Tier, tier.Models[0],
-                    0, 0, 0, false, (int)sw.ElapsedMilliseconds, Aborted: true, Fallback: false));
+                    0, 0, 0, false, (int)sw.ElapsedMilliseconds, Aborted: true, Fallback: false, OutputFiltered: false));
             }
         }
         catch (OperationCanceledException)

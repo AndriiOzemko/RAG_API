@@ -41,7 +41,8 @@ public sealed class VectorDb
                 CacheHit        BIT NOT NULL DEFAULT 0,
                 LatencyMs       INT NOT NULL DEFAULT 0,
                 Aborted         BIT NOT NULL DEFAULT 0,
-                Fallback        BIT NOT NULL DEFAULT 0
+                Fallback        BIT NOT NULL DEFAULT 0,
+                OutputFiltered  BIT NOT NULL DEFAULT 0
             );
             """, ct);
 
@@ -51,6 +52,15 @@ public sealed class VectorDb
                 AND COL_LENGTH('dbo.UsageLog', 'Fallback') IS NULL
             BEGIN
                 ALTER TABLE dbo.UsageLog ADD Fallback BIT NOT NULL DEFAULT 0;
+            END
+            """, ct);
+
+        // Add OutputFiltered column to existing table if missing
+        await ExecAsync(conn, """
+            IF OBJECT_ID('dbo.UsageLog','U') IS NOT NULL 
+                AND COL_LENGTH('dbo.UsageLog', 'OutputFiltered') IS NULL
+            BEGIN
+                ALTER TABLE dbo.UsageLog ADD OutputFiltered BIT NOT NULL DEFAULT 0;
             END
             """, ct);
 
@@ -227,9 +237,9 @@ public sealed class VectorDb
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             INSERT INTO dbo.UsageLog
-                (ApiKey, Tier, Model, InputTokens, OutputTokens, CostUsd, CacheHit, LatencyMs, Aborted, Fallback)
+                (ApiKey, Tier, Model, InputTokens, OutputTokens, CostUsd, CacheHit, LatencyMs, Aborted, Fallback, OutputFiltered)
             VALUES
-                (@ApiKey, @Tier, @Model, @Input, @Output, @Cost, @CacheHit, @Latency, @Aborted, @Fallback);
+                (@ApiKey, @Tier, @Model, @Input, @Output, @Cost, @CacheHit, @Latency, @Aborted, @Fallback, @OutputFiltered);
             """;
         cmd.Parameters.AddWithValue("@ApiKey", entry.ApiKey);
         cmd.Parameters.AddWithValue("@Tier", entry.Tier);
@@ -241,6 +251,7 @@ public sealed class VectorDb
         cmd.Parameters.AddWithValue("@Latency", entry.LatencyMs);
         cmd.Parameters.AddWithValue("@Aborted", entry.Aborted);
         cmd.Parameters.AddWithValue("@Fallback", entry.Fallback);
+        cmd.Parameters.AddWithValue("@OutputFiltered", entry.OutputFiltered);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -327,7 +338,7 @@ public record CacheEntry(string QueryText, string Answer, string[] Sources);
 public record UsageEntry(
     string ApiKey, string Tier, string Model,
     int InputTokens, int OutputTokens,
-    double CostUsd, bool CacheHit, int LatencyMs, bool Aborted, bool Fallback);
+    double CostUsd, bool CacheHit, int LatencyMs, bool Aborted, bool Fallback, bool OutputFiltered);
 
 public record UsageSummary(
     int TotalRequests, long TotalTokens,
