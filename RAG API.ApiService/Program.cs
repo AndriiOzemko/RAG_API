@@ -9,6 +9,9 @@ using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
+
 // ── Service Defaults (Aspire) ────────────────────────────────────────────────
 builder.AddServiceDefaults();
 
@@ -45,6 +48,8 @@ builder.Services.AddCors(o =>
         p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 
 var app = builder.Build();
+
+app.Logger.LogInformation("Application started in {Environment}", app.Environment.EnvironmentName);
 
 // ── Middleware ───────────────────────────────────────────────────────────────
 app.UseCors();

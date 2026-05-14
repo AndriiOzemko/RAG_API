@@ -8,7 +8,10 @@ var builder = WebAssemblyHostBuilder.CreateDefault(args);
 builder.RootComponents.Add<App>("#app");
 builder.RootComponents.Add<HeadOutlet>("head::after");
 
-// ApiBaseUrl is read from wwwroot/appsettings.json by the browser
+// Load environment-specific appsettings
+// For Blazor WASM, appsettings are loaded from wwwroot/appsettings.json
+// During development: uses appsettings.Development.json (if exists)
+// During production publish: appsettings.Production.json is copied to appsettings.json
 var apiBase = builder.Configuration["ApiBaseUrl"]
     ?? builder.HostEnvironment.BaseAddress;
 

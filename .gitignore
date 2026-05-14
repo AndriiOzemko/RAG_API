@@ -3,3 +3,5 @@ obj/
 .vs/
 .git/
 appsettings.Development.json
+.azure
+ReadMe.txt

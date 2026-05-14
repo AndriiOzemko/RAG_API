@@ -11,4 +11,16 @@
     <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="10.0.7" PrivateAssets="all" />
   </ItemGroup>
 
+  <!-- Copy environment-specific appsettings to wwwroot during publish -->
+  <ItemGroup>
+    <Content Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Update="appsettings.Development.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Update="appsettings.Production.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Copy appsettings.Production.json to wwwroot when publishing in Release mode -->
+  <Target Name="CopyProductionSettings" AfterTargets="AfterBuild" Condition="'$(Configuration)' == 'Release'">
+    <Copy SourceFiles="appsettings.Production.json" DestinationFiles="wwwroot\appsettings.json" />
+  </Target>
+
 </Project>
